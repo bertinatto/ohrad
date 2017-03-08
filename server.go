@@ -19,7 +19,7 @@ const (
 
 type Server struct {
 	Addr        string
-	ReadTimeout int
+	ReadTimeout int32
 	started     bool
 	inFlight    sync.WaitGroup
 }
@@ -30,6 +30,10 @@ func NewServer() *Server {
 		ReadTimeout: 5,
 		started:     false,
 	}
+}
+
+func (srv *Server) getReadTimeout() time.Duration {
+	return time.Duration(srv.ReadTimeout) * time.Second
 }
 
 func (srv *Server) ListenAndServe() error {
@@ -51,12 +55,27 @@ func (srv *Server) ListenAndServe() error {
 	return nil
 }
 
-func (srv *Server) serve(conn *net.UDPConn, clientAddr *net.UDPAddr, buf []byte) {
+func (srv *Server) serveUDP(conn *net.UDPConn) error {
+	defer conn.Close()
+
+	for {
+		query, addr, err := GetNtpMsg(conn)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		srv.inFlight.Add(1)
+		go srv.serve(conn, addr, query)
+
+	}
+}
+
+func (srv *Server) serve(conn *net.UDPConn, clientAddr *net.UDPAddr, query NtpMsg) {
 	defer srv.inFlight.Done()
 
-	var query, reply Msg
+	var reply NtpMsg
 
-	query = NewMsg(buf)
 	log.Println(query)
 
 	// todo: move right after readfromudp
@@ -96,27 +115,9 @@ func (srv *Server) serve(conn *net.UDPConn, clientAddr *net.UDPAddr, buf []byte)
 
 	log.Println(reply)
 
-	conn.WriteToUDP(reply.Bytes(), clientAddr)
+	SendNtpMsg(conn, clientAddr, &reply)
 
 	return
-
-}
-
-func (srv *Server) serveUDP(conn *net.UDPConn) error {
-	defer conn.Close()
-
-	buf := make([]byte, 1024)
-
-	for {
-		n, addr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			continue
-		}
-
-		srv.inFlight.Add(1)
-		go srv.serve(conn, addr, buf[0:n])
-
-	}
 }
 
 func (srv *Server) Shutdown() error {
@@ -128,7 +129,7 @@ func (srv *Server) Shutdown() error {
 	}()
 
 	select {
-	case <-time.After(time.Duration(srv.ReadTimeout)):
+	case <-time.After(srv.getReadTimeout()):
 		return &ErrorTimeout{where: "shutdown"}
 	case <-quit:
 		return nil
