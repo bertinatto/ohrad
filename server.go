@@ -1,7 +1,6 @@
 package ohrad
 
 import (
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -12,9 +11,8 @@ const (
 	ModeMask    = 7 << 0
 	ModeServer  = 4
 	ModeClient  = 3
-	ModeSynAct  = 1
-	ModeSynPas  = 2
-	Jan1970     = 2208988800
+	ModeSymAct  = 1 // Symmetric active
+	ModeSymPas  = 2 // Symmetric passive
 )
 
 type Server struct {
@@ -61,7 +59,7 @@ func (srv *Server) serveUDP(conn *net.UDPConn) error {
 	for {
 		query, addr, err := GetNtpMsg(conn)
 		if err != nil {
-			log.Println(err)
+			Log.Debug(err.Error())
 			continue
 		}
 
@@ -71,51 +69,44 @@ func (srv *Server) serveUDP(conn *net.UDPConn) error {
 	}
 }
 
-func (srv *Server) serve(conn *net.UDPConn, clientAddr *net.UDPAddr, query NtpMsg) {
+func (srv *Server) serve(conn *net.UDPConn, clientAddr *net.UDPAddr, query *NtpMsg) {
 	defer srv.inFlight.Done()
 
 	var reply NtpMsg
 
-	log.Println(query)
+	Log.NtpMsg(&reply)
 
-	// todo: move right after readfromudp
-	rectime := NtpLong{
-		IntParl: unix2ntp(time.Now().Unix()),
-		//Fractionl: unix2ntp(time.Now().Nanosecond()),
-		Fractionl: 0,
-	}
-
-	// Header
-	//reply.Status = 3 << 6
+	// LI (leap indicator) is a 2-bit field. Not supported for [now|ever]
 	reply.Status = 0
+
+	// VN is a 3-bit field representing the protocol version
 	reply.Status |= (query.Status & VersionMask)
+
+	// Mode is a 3-bit field representin the type of message
 	if (query.Status & ModeMask) == ModeClient {
 		reply.Status |= ModeServer
-	} else if (query.Status & ModeMask) == ModeSynAct {
-		reply.Status |= ModeSynPas
+	} else if (query.Status & ModeMask) == ModeSymAct {
+		reply.Status |= ModeSymPas
 	} else {
-		log.Println("Invalid msg")
+		Log.Debug("Invalid msg")
 		return
 	}
 
-	// Body
-	reply.Stratum = 3
-	reply.Ppoll = query.Ppoll
+	// We aren't fetching the time from other servers, so I'm making
+	// the stratum field as higher as possible. 16 is unsynchronized
+	reply.Stratum = 15
+	reply.Refid = 0
 	reply.Precision = 0
-	reply.Rectime = rectime
-	reply.Reftime = rectime
+	reply.Ppoll = query.Ppoll
+	reply.Rectime = query.Rectime
+	reply.Reftime = query.Rectime
 	reply.Orgtime = query.Xmttime
 	reply.Rootdelay = NtpShort{0, 0}
-	reply.Refid = 0xc8a007ba
-	reply.Xmttime = NtpLong{
-		IntParl: unix2ntp(time.Now().Unix()),
-		//Fractionl: unix2ntp(time.Now().Nanosecond()),
-		Fractionl: 0,
-	}
-
-	log.Println(reply)
+	reply.Xmttime = getTimeNow()
 
 	SendNtpMsg(conn, clientAddr, &reply)
+
+	Log.NtpMsg(&reply)
 
 	return
 }

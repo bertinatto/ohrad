@@ -3,13 +3,15 @@ package ohrad
 import (
 	"bytes"
 	"encoding/binary"
-	"log"
+	"fmt"
 	"net"
 	"syscall"
 )
 
 const (
-	NtpMsgSize int = 48 // no auth
+	NtpMsgSize     int = 48 // no auth
+	Jan1970            = 2208988800
+	NanosPerSecond     = 1000 * 1000 * 1000
 )
 
 type NtpLong struct {
@@ -42,23 +44,26 @@ func (m *NtpMsg) Bytes() []byte {
 	return buf.Bytes()
 }
 
-func NewMsg(buf []byte) NtpMsg {
+func NewMsg(buf []byte) *NtpMsg {
 	var query NtpMsg
 	binary.Read(bytes.NewReader(buf), binary.BigEndian, &query)
-	return query
+	return &query
 }
 
-func GetNtpMsg(conn *net.UDPConn) (NtpMsg, *net.UDPAddr, error) {
-	var query NtpMsg
-	buf := make([]byte, 1024)
+func GetNtpMsg(conn *net.UDPConn) (*NtpMsg, *net.UDPAddr, error) {
+	// FIXME: only handling no-auth messages for now
+	buf := make([]byte, NtpMsgSize)
 	n, addr, err := conn.ReadFromUDP(buf)
 
-	// FIXME: just checking no auth msgs for now
+	rectime := getTimeNow()
+
 	if n != NtpMsgSize {
-		log.Println("Invalid msg size)")
+		Log.Debug("Invalid msg size)")
 	}
 
-	query = NewMsg(buf[0:n])
+	query := NewMsg(buf[0:n])
+	query.Rectime = rectime
+
 	return query, addr, err
 }
 
@@ -70,12 +75,12 @@ func SendNtpMsg(conn *net.UDPConn, clientAddr *net.UDPAddr, msg *NtpMsg) {
 		if (errno == syscall.ENOBUFS) || (errno == syscall.EHOSTUNREACH) || (errno == syscall.ENETDOWN) || (errno == syscall.EHOSTDOWN) {
 			return
 		}
-		log.Println("WriteToUDP: %s", errno)
+		Log.Debug(fmt.Sprintf("WriteToUDP: %s", errno))
 		return
 	}
 
 	if n != len(msgBytes) {
-		log.Println("Sent msg has a different size")
+		Log.Notice("Sent msg has a different size")
 	}
 
 	return
